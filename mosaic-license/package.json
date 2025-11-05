@@ -1,0 +1,9 @@
+{
+  "name": "mosaic-license",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@supabase/supabase-js": "2.x",
+    "stripe": "16.x"
+  }
+}

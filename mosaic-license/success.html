@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ja">
+  <meta charset="utf-8" />
+  <title>ご登録ありがとうございます</title>
+  <body>
+    <h1>ご登録ありがとうございます！</h1>
+    <div id="status">準備中...</div>
+
+    <div id="result" style="display:none;">
+      <p><a id="dl" href="#" target="_blank">ダウンロードページへ</a></p>
+
+      <p>ライセンスキー：</p>
+      <pre id="license" style="user-select:all;"></pre>
+      <button id="copy">コピー</button>
+      <button id="save">ライセンスファイルを保存</button>
+
+      <hr />
+      <small>管理コード（控えてください）：<code id="sid"></code></small>
+      <p>※このページは安全のため再表示できません。キーは必ず控えてください。</p>
+    </div>
+
+    <script>
+      (async () => {
+        const q = new URLSearchParams(location.search);
+        const sessionId = q.get("session_id");
+        if (!sessionId) { document.getElementById('status').textContent = 'セッションIDがありません'; return; }
+
+        const res = await fetch("/api/issue-license", {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ sessionId })
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          document.getElementById('status').textContent = data.message || '発行に失敗しました。サポートへご連絡ください。';
+          return;
+        }
+
+        // 表示
+        document.getElementById('dl').href = data.downloadUrl;
+        document.getElementById('license').textContent = data.licenseKey;
+        document.getElementById('sid').textContent = sessionId;
+
+        // UI切り替え
+        document.getElementById('status').style.display = 'none';
+        document.getElementById('result').style.display = 'block';
+
+        // コピー
+        document.getElementById('copy').onclick = async () => {
+          await navigator.clipboard.writeText(data.licenseKey);
+          alert('コピーしました');
+        };
+
+        // .lic保存（ユーザーに保存してもらう）
+        document.getElementById('save').onclick = () => {
+          const blob = new Blob([`LICENSE_KEY=${data.licenseKey}\n`], { type: 'text/plain' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'mosaic_tool.lic';
+          a.click();
+          URL.revokeObjectURL(a.href);
+        };
+      })();
+    </script>
+  </body>
+</html>
