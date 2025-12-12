@@ -4,6 +4,7 @@
   "type": "module",
   "dependencies": {
     "@supabase/supabase-js": "2.x",
+    "dotenv": "^17.2.3",
     "stripe": "16.x"
   }
 }
