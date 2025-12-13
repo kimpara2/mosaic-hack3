@@ -19,17 +19,31 @@ function buffer(readable) {
   });
 }
 
+/**
+ * ✅ 正式仕様：XXXXXXXX-XXXXXXXX-XXXXXXXX（8-8-8）
+ */
 function generatePlainKey() {
-  // 既存の形式があるならここを合わせてOK
-  return `MH-${crypto.randomUUID()}`;
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 紛らわしい文字を除外
+  const pick = (n) => {
+    const bytes = crypto.randomBytes(n);
+    let out = '';
+    for (let i = 0; i < n; i++) out += alphabet[bytes[i] % alphabet.length];
+    return out;
+  };
+  return `${pick(8)}-${pick(8)}-${pick(8)}`;
 }
 
-function sha256Hex(text) {
-  return crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+/**
+ * ✅ 正式仕様：HMAC-SHA256
+ * DBにはこれを license_key_hash として保存する
+ */
+function hmacSha256Hex(text) {
+  const secret = process.env.LICENSE_HMAC_SECRET;
+  if (!secret) throw new Error('LICENSE_HMAC_SECRET is missing');
+  return crypto.createHmac('sha256', secret).update(text, 'utf8').digest('hex');
 }
 
 async function upsertCustomerByStripeCustomerId(stripeCustomerId, email) {
-  // customers テーブルは「stripe_customer_id」を持ってる前提（あなたの既存コードもそう）
   const { data: existing } = await supabase
     .from('customers')
     .select('id')
@@ -87,23 +101,18 @@ export default async function handler(req, res) {
   try {
     console.log('[webhook] type=', event.type);
 
-    /**
-     * ✅ Checkout完了（success.html に session_id が渡ってくるのでここが超重要）
-     * ここで licenses をINSERTしておくと success.html で表示できる
-     */
     if (event.type === 'checkout.session.completed') {
-      const s = event.data.object; // checkout.session
+      const s = event.data.object;
 
-      // サブスクのみ扱う（必要なら mode === 'payment' も追加可）
       if (s.mode === 'subscription') {
-        const stripeCustomerId = s.customer; // cus_...
+        const stripeCustomerId = s.customer;
         const email = s.customer_details?.email || s.customer_email || null;
         const sessionId = s.id; // cs_test_...
-        const plan = 'pro-monthly'; // ここは必要なら priceId で分岐して決めてOK
+        const plan = 'pro-monthly';
 
         const customerId = await upsertCustomerByStripeCustomerId(stripeCustomerId, email);
 
-        // 二重発行防止：session_id（cs_...）で1回だけ発行
+        // 二重発行防止：session_idで1回だけ
         const { data: exists, error: exErr } = await supabase
           .from('licenses')
           .select('id')
@@ -112,8 +121,8 @@ export default async function handler(req, res) {
         if (exErr) throw exErr;
 
         if (!exists) {
-          const plainKey = generatePlainKey();
-          const licenseKeyHash = sha256Hex(plainKey);
+          const plainKey = generatePlainKey();              // ★ 8-8-8
+          const licenseKeyHash = hmacSha256Hex(plainKey);   // ★ HMAC-SHA256
 
           const payload = {
             customer_id: customerId,
@@ -122,7 +131,6 @@ export default async function handler(req, res) {
             status: 'active',
             plan,
             session_id: sessionId,
-            // ↓ licenses に email / issued_by があるなら入れる（無ければ削ってOK）
             email,
             issued_by: 'stripe',
           };
@@ -130,36 +138,26 @@ export default async function handler(req, res) {
           const { error: insErr } = await supabase.from('licenses').insert(payload);
           if (insErr) throw insErr;
 
-          console.log('[checkout.session.completed] license issued:', sessionId);
+          console.log('[checkout.session.completed] license issued:', plainKey);
         } else {
-          // 念のため有効化
-          await supabase.from('licenses')
+          await supabase
+            .from('licenses')
             .update({ status: 'active' })
             .eq('session_id', sessionId);
         }
       }
     }
 
-    /**
-     * ✅ 請求が支払われた（毎月更新でも来る）
-     * ここでは基本「active化」でOK（既にcheckoutで発行済みの想定）
-     */
     if (event.type === 'invoice.paid') {
       const inv = event.data.object;
       await setAllLicensesStatusByStripeCustomer(inv.customer, 'active');
     }
 
-    /**
-     * ❌ 支払い失敗 → 停止
-     */
     if (event.type === 'invoice.payment_failed') {
       const inv = event.data.object;
       await setAllLicensesStatusByStripeCustomer(inv.customer, 'suspended');
     }
 
-    /**
-     * 🔄 サブスク状態変更
-     */
     if (event.type === 'customer.subscription.updated') {
       const sub = event.data.object;
       const map = {
@@ -174,9 +172,6 @@ export default async function handler(req, res) {
       await setAllLicensesStatusByStripeCustomer(sub.customer, map[sub.status] || 'suspended');
     }
 
-    /**
-     * 🗑 解約
-     */
     if (event.type === 'customer.subscription.deleted') {
       const sub = event.data.object;
       await setAllLicensesStatusByStripeCustomer(sub.customer, 'canceled');
